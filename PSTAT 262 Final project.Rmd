@@ -1,0 +1,237 @@
+---
+title: "PSTAT 262 Final Project"
+author: "Ben Vaughan"
+date: "May 30, 2017"
+output: pdf_document
+---
+
+#Abstract
+
+For my final project, I was interested in looking at count data; specifically counts taken at multiple times across an interval. The dataset I used for the project is the bike sharing dataset from the UCI Machine Learning Repository, which contains data about bike rentals from Capital Bike Share in Washington D.C. The data provided is counts at almost every hour of every day from January 1, 2011 to December 31, 2012. A few days are missing some observations at a few of the hours of the day, most of which are toward the starting date of data collection. Exact reasons for missing observations is undocumented in the information file. The purpose of my project was to create two models: one that could be used to predict the total sales of one day based on the previous day's sale history and another that could be used to predict the sale history of one day based on the previous day's sale history. To build each of these models, I used scalar-on-function regression and function-on-function regression.
+
+#Introduction
+
+The main goal of my project was to build prediction models for count data using both scalar-on-function and function-on-function regression techniques. I specifically modeled the number of bike rentals from the company Capital Bike Share which was recorded at almost every hour of every day for two years. Using scalar-on-function regression, I modeled the total number of rentals on Thursdays using the sale history from Wednesdays and, using function-on-function regression, I modeled the sales history for Thursdays based on the sales history of Wednesdays. These two days can of course be swapped with any other two days of the week for future model use. Days with missing data were ignored in the analysis. Of the 104 weeks in the original dataset, 86 had all 24 hourly rental counts on both Wednesday and Thursday. These 86 weeks were the data used in the analysis. 
+
+The scalar-on-function regression model takes the form
+
+$$Y_i = \int \beta(s)X_i(s)ds + \epsilon_i$$
+
+Where the $Y_i$s are the total rental counts on Thursdays, the $X_i(s)$s are the rental curves on Wednesdays and the goal is to estimate the parameter function $\beta(s)$. To conduct this analysis, I make use of the `FPCA` function in the `fdapace` package in R. 
+
+The function-on-function regression model takes the form
+
+$$Y_i(t) = \int \beta(t,s)X_i(s)ds + \epsilon_i(t)$$
+
+Where the $Y_i(t)$s are the rental curves on Thursdays, the $X_i(s)$s are the rental curves on Wednesdays and the goal is to estimate the parameter surface $\beta(t,s)$. To conduct this portion of the analysis, I use the `pffr` and `ff` functions from the `refund` package in R.
+
+#Analysis
+
+I begin by loading the appropriate packages used in my analysis. As I mentioned, I make use of the `fdapace` and `refund` packages to create the functional data models. I also use the `ggplot2` package to create some of the plots in my report
+
+```{r, warning=F}
+
+library(fdapace)
+library(refund)
+library(ggplot2)
+
+```
+
+The next step is to import the data. This step is fairly standard, as the data are contained in a `.csv` file, so it is enough to use the `read.csv` function as follows.
+
+```{r}
+
+#full dataset
+bikes <- read.csv("C:/Users/Ben/Dropbox/PSTAT 262/Final Project/Bike-Sharing-Dataset/hour.csv",
+                  header=T)
+
+```
+
+After importing the data I first wanted to convert the data into a form I could use with the `FPCA` function, which is type "list", and the `pffr` and `ff` functions, which are matrices. I then also only consider the Wednesday/Thursday pairs where both days have all 24 hourly observations for number of rentals in each hour. The reason for accounting for only these pairs in this step is that I actually tried doing the analysis with all days, however, the uneven observation numbers were causing issues when using the afformentioned functions, so I decided to only use those days with full curves. Those data with all 24 hourly observations are denoted by having `complete` in the variable name.
+
+```{r}
+#data from Wednesdays only
+wednesday <- bikes[bikes$weekday==3,]
+wednesday$dteday <- droplevels(wednesday$dteday)
+wed.split <- split(wednesday,wednesday$dteday)
+#get list of hours and counts for each Wednesday
+wed.hrs.split <- split(wednesday$hr,wednesday$dteday)
+wed.cnt.split <- split(wednesday$cnt,wednesday$dteday)
+
+#data from Thursdays only
+thursday <- bikes[bikes$weekday==4,]
+thursday$dteday <- droplevels(thursday$dteday)
+thu.split <- split(thursday,thursday$dteday)
+#get list of hours and counts for each Thursday
+thu.hrs.split <- split(thursday$hr,thursday$dteday)
+thu.cnt.split <- split(thursday$cnt,thursday$dteday)
+#get list of all thursday data, only days with 24 hours
+complete.thu.split<-list()
+j<-1
+for(i in 1:length(wed.hrs.split)){
+  if(length(wed.hrs.split[[i]])==24 && length(thu.hrs.split[[i]])==24){
+    complete.thu.split[[j]] <- thu.split[[i]]
+    j<-j+1
+  }
+}
+#get total counts of rentals on each Thursday
+thu.totals <- vector()
+for(i in 1:length(complete.thu.split)){
+  thu.totals <- c(thu.totals,sum(complete.thu.split[[i]]$cnt))
+}
+
+#get only days with 24 hours
+complete.wed.hrs.split<-list()
+complete.thu.hrs.split<-list()
+complete.wed.cnt.split<-list()
+complete.thu.cnt.split<-list()
+j<-1
+for(i in 1:length(wed.hrs.split)){
+  if(length(wed.hrs.split[[i]])==24 && length(thu.hrs.split[[i]])==24){
+    complete.wed.hrs.split[[j]] <- wed.hrs.split[[i]]
+    complete.thu.hrs.split[[j]] <- thu.hrs.split[[i]]
+    j<-j+1
+  }
+}
+complete.wed.cnt.split<-list()
+j<-1
+for(i in 1:length(wed.cnt.split)){
+  if(length(wed.cnt.split[[i]])==24 && length(thu.cnt.split[[i]])==24){
+    complete.wed.cnt.split[[j]] <- wed.cnt.split[[i]]
+    complete.thu.cnt.split[[j]] <- thu.cnt.split[[i]]
+    j<-j+1
+  }
+}
+
+#convert 24 hour list data into matrix for pffr
+complete.wed.cnt.mat <- matrix(unlist(complete.wed.cnt.split),
+                               ncol=length(complete.wed.cnt.split))
+
+complete.thu.cnt.mat <- matrix(unlist(complete.thu.cnt.split),
+                               ncol=length(complete.thu.cnt.split))
+
+```
+
+Once I set up the data I wanted to visualize it, so I plotted the Wednesday rental curves along with a smooth mean curve estimate, which comes from `FPCA`. In doing the functional principal component analysis in R, you are able to either use several different methods to choose the bandwidth used to calculate the mean curve estimate, or you can manually adjust the bandwidth. I originally used generalized cross validation to find the optimal bandwidth, however, this "optimal" bandwidth chosen by GCV was actually causing issues with the smoothness of the parameter function estimate, $\hat{\beta}(s)$, which I will discuss shortly. So instead of using the bandwidth selected by GCV, I manually adjusted the bandwidth to make $\hat{\beta}(s)$ smoother.
+
+```{r}
+#plot wednesday rental curves
+plot1 <- ggplot(data=wed.split[[1]],
+                aes(x=wed.split[[1]]$hr,
+                    y=wed.split[[1]]$cnt))+
+         geom_line()+
+         labs(x="Hour",y="Count",title="Wednesday Rentals")
+
+for(i in 2:length(wed.split)){
+  plot1 <- plot1 + geom_line(data=wed.split[[i]],
+                             aes_string(x=wed.split[[i]]$hr,
+                                        y=wed.split[[i]]$cnt))
+  
+}
+
+#get smooth mean estimate for Wednesday rental curves
+fpca <- FPCA(Ly = complete.wed.cnt.split,
+             Lt = complete.wed.hrs.split,
+             optns=list(methodMuCovEst="smooth",
+                        #methodBwMu="GCV",
+                        userBwMu = 5,
+                        methodBwCov="GCV"))
+
+mu <- as.data.frame(fpca$mu)
+names(mu) <- "mu"
+
+#plot smooth mean estimate and rental curves on same plot
+plot1 <- plot1 + geom_line(data=mu,
+                           aes(x=seq(0,23),y=mu),
+                           colour="orange",
+                           size=2)
+print(plot1)
+
+```
+
+The plot above actually plots all of the Wednesday rental curves, including those that did not have all 24 hourly observations. You can see evidence of this by looking above the 16 Hour mark and observe that that curve stops at the 16th hour. This means that that particular Wednesday only had 16 hours worth of data; however, it does not mean that it was just the first 16 hours of data. There are actually missing hourly observations along that curve. This curve with only 16 hours of data was actually the shortest one. There were a few with either 22 or 23 hours of data, but the large majority had all 24 hours; of the 104 (52 weeks per year $\times$ 2 years = 104 Wednesdays), 86 of the Wednesday curves had all 24 hours. 
+
+We can see some obvious and easily explainable trends in this plot. The most common bike rental times were 8 am and between 5 and 6 pm. These are obviously the times that people will start heading to work in the morning and heading home from work in the afternoon. We also see a small bump between these hours, which is when people are likely to head out to lunch.
+
+We also see that the counts vary quite a bit although the curves have the same general shape. Indeed, the curves with generally fewer counts are days that are more toward the beginning of data collection and the curves with generally larger counts are days toward the end of data collection. It is not mentioned in the `Readme` file of the data set, but I presume that data collection began around the time that the business opened in Washington D.C. and ended 2 years after that.
+
+The mean curve estimate is a bit underwelming, as it does not seem to account for the lunch break in the middle of the day and it doesn't spike as high as we might expect it to during the peak business hours; however, using a smaller bandwidth does actually make these spikes more apparent. Keep in mind that the bandwidth used was chosen for the smoothness of the parameter function estimate in the scalar-on-function model, which is next.
+
+As I mentioned before, the scalar on function regression model takes the following form:
+$$Y_i = \int \beta(s)X_i(s)ds + \epsilon_i$$
+where the $Y_i$s are the total rentals on Thursdays and the $X_i(s)$s are the Wednesday rental curves. Every random function $X$ in $L^2$ can be written in the expanded form 
+$$X(s)=\mu(t)+\sum_{j=1}^{\infty}\xi_jv_j(t)$$
+where $v_j$ are the functional principal ocomponenets (i.e. the eigenfunctions of the covariance operator of X). Because we have ral data, we need to estimate the covariance function and its eigenfunctions, so if we replace $X_i$ in the model with its estimate
+$$X_i(t)\approx \hat{\mu}(t)+\sum_{j=1}^{p}\hat{\xi}_{ij}\hat{v}_j, \quad \hat{\xi}_{ij}=\int \left| X_i(t)-\hat{\mu}(t)\hat{v}_jdt \right|$$
+then we get the model
+
+$$
+Y_i = \alpha+\int \beta(s) \left(\hat{\mu}(t) + \sum_{j=1}^{p} \hat{\xi}_{ij}\hat{v}_j\right)ds + \epsilon_i 
+$$
+which, when simplified, has the form
+
+$$
+Y_i=\beta_0+\sum_{j=1}^{p}\hat{\xi}_{ij}\beta_j+\epsilon_i
+$$
+These estimates are found using the following code and we get the estimate for $\beta(s)$ from the original model and plot it:
+```{r}
+#Scalar on Function Regression
+b.den1 <- as.numeric(cov(as.matrix(thu.totals),fpca$xiEst)/fpca$lambda)
+
+beta.den1 <- rowSums(fpca$phi%*%diag(b.den1,nrow=length(b.den1),ncol=length(b.den1)))
+
+data.1 <- as.data.frame(cbind(seq(0,23),beta.den1))
+
+names(data.1) <- c("hr","beta.den")
+
+plot.beta.1 <- ggplot(data=data.1, aes(x=hr,y=beta.den))+
+               geom_line()+
+               labs(x="Hour", title="Regression Parameter Fit")+
+               theme(axis.title.y=element_blank())
+
+print(plot.beta.1)
+
+```
+
+We can see that this estimate for $\beta(s)$ is not extremely smooth, but will work for the simplified model with the summation form.
+
+Next, we work on the function-on-function regression to model the Thursday rental curves using the Wednesday rental curves. This model takes the form
+
+$$
+Y_i(t)=\alpha(t)+\int \beta(t,s) X_i(s) ds + \epsilon_i(t), \quad i=1,2,\ldots, N
+$$
+where the $Y_i(t)$s are the Thursday rental curves, the $X_i(s)$s are the Wednesday rental curves, and $N=86$. The regression coefficient is now a bivariate function, or a surface. To estimate this surface, we use the `refund` package with the `ff` function to set up the integral in the regression model above and then use the `pffr` function to do the regression. We can then plot the coefficient surface as follows.
+
+```{r, results="hide"}
+#Function on Function Regression
+m_ff <- pffr(complete.thu.cnt.mat ~ ff(complete.wed.cnt.mat))
+
+psi_plot <- plot(m_ff,select=2,pers=TRUE)[[2]]
+```
+
+```{r}
+persp(psi_plot$x,
+        psi_plot$y,
+        matrix(psi_plot$fit,40,40),
+        xlab="s",
+        ylab="t",
+        phi=20,
+        theta=45,
+        ticktype="detailed",
+        main=expression(hat(beta)(t,s)),
+        zlab="",
+        border=NA,
+        col="orange",
+        shade=0.25)
+```
+
+This surface is the estimate for the coefficient kernel above.
+
+#Conclusion
+
+The original goal of this project was to model total rentals on Thursdays on Wednesday rental curves and to model Thursday rental curves on Wednesday rental curves. My analysis shows that I was able to attain coefficient function estimates for both of these models appropriately by getting a single Hour-dependent function for the scalar-on-function model and a bivariate surface for the function-on-function model. In the future, these functions can be used for prediction of total Thursday sales and Thursday sale curves. The general steps of the analysis can also be used to model total sales and sales curves for any other day based on any other previous day in the dataset. 
+
+#References
+
+Lichman, M. (2013). UCI Machine Learning Repository [http://archive.ics.uci.edu/ml]. Irvine, CA: University of California, School of Information and Computer Science.
+
